@@ -583,7 +583,10 @@ export async function execute(
     model,
   };
 
-  if (parsed.errorMessage) {
+  // A clean exit is success: stderr pattern noise (hermes logs harmless warnings such as
+  // "Failed to load bundled provider plugin …") must not fail a run that produced its result.
+  const cleanExit = !result.timedOut && result.exitCode === 0;
+  if (parsed.errorMessage && !cleanExit) {
     executionResult.errorMessage = parsed.errorMessage;
   } else if (!result.timedOut && typeof result.exitCode === "number" && result.exitCode !== 0) {
     executionResult.errorMessage = `Hermes exited with code ${result.exitCode}`;
