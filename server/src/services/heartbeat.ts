@@ -4830,6 +4830,17 @@ export async function buildPaperclipRuntimeMcpServers(input: {
         )
         .limit(1);
       if (!gateway) throw error;
+      // The deterministic slug is already taken by the row archived a moment ago
+      // (archive-then-create collides on every later run). Handing that archived
+      // row to the token mint serves a disabled gateway and every MCP call 401s
+      // with `gateway_disabled`; reactivate it instead.
+      if (gateway.status !== "active" || gateway.archivedAt) {
+        [gateway] = await input.db
+          .update(toolMcpGateways)
+          .set({ status: "active", archivedAt: null })
+          .where(eq(toolMcpGateways.id, gateway.id))
+          .returning();
+      }
     }
   }
 
