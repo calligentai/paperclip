@@ -52,6 +52,7 @@ interface AgentWakeOptions extends BaseClientOptions {
   trigger?: string;
   reason?: string;
   payload?: string;
+  issue?: string;
   idempotencyKey?: string;
   forceFreshSession?: boolean;
 }
@@ -739,6 +740,7 @@ export function registerAgentCommands(program: Command): void {
       .option("--trigger <trigger>", "Trigger detail (manual, ping, callback, system)", "manual")
       .option("--reason <text>", "Wakeup reason")
       .option("--payload <json>", "JSON object payload")
+      .option("--issue <issueId>", "Bind the wake to this issue (run starts bound instead of unbound)")
       .option("--idempotency-key <key>", "Wakeup idempotency key")
       .option("--force-fresh-session", "Request a fresh adapter session")
       .action(async (agentRef: string, opts: AgentWakeOptions) => {
@@ -754,10 +756,13 @@ export function registerAgentCommands(program: Command): void {
             triggerDetail: opts.trigger,
             reason: opts.reason,
             payload: parseJsonObject(opts.payload),
+            issueId: opts.issue,
             idempotencyKey: opts.idempotencyKey,
             forceFreshSession: Boolean(opts.forceFreshSession),
           });
-          const result = await ctx.api.post<AgentWakeupResponse>(apiPath`/api/agents/${agentRow.id}/wakeup`, payload);
+          // /wakeup is the legacy route: it ignores issueId entirely, so every CLI wake
+          // started unbound. /heartbeat/invoke binds from contextSnapshot.issueId.
+          const result = await ctx.api.post<AgentWakeupResponse>(apiPath`/api/agents/${agentRow.id}/heartbeat/invoke`, payload);
           printOutput(result, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);

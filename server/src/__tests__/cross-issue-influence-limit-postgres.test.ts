@@ -7,6 +7,7 @@ import {
   companies,
   createDb,
   heartbeatRuns,
+  issues,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -32,6 +33,7 @@ describeEmbeddedPostgres("cross-issue influence limit PostgreSQL serialization",
   afterEach(async () => {
     await db.delete(activityLog);
     await db.delete(heartbeatRuns);
+    await db.delete(issues);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -112,5 +114,64 @@ describeEmbeddedPostgres("cross-issue influence limit PostgreSQL serialization",
       .where(and(eq(activityLog.companyId, companyId), eq(activityLog.runId, runId)));
     expect(recorded.filter((row) => row.action === "issue.cross_issue_influence_observed")).toHaveLength(20);
     expect(recorded.filter((row) => row.action === "issue.cross_issue_influence_cap_rejected")).toHaveLength(1);
+  });
+
+  it("lets an unbound run write its own assigned issue but not another agent's", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const otherAgentId = randomUUID();
+    const runId = randomUUID();
+    const ownIssueId = randomUUID();
+    const otherIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `C${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      defaultResponsibleUserId: "board-user",
+    });
+    for (const id of [agentId, otherAgentId]) {
+      await db.insert(agents).values({
+        id,
+        companyId,
+        name: `Agent ${id}`,
+        role: "engineer",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      });
+    }
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+      responsibleUserId: "board-user",
+      contextSnapshot: {},
+    });
+    await db.insert(issues).values([
+      { id: ownIssueId, companyId, title: "Own card", status: "in_progress", assigneeAgentId: agentId },
+      { id: otherIssueId, companyId, title: "Other card", status: "in_progress", assigneeAgentId: otherAgentId },
+    ]);
+
+    const base = {
+      companyId,
+      runId,
+      agentId,
+      kind: "comment" as const,
+      now: CROSS_ISSUE_INFLUENCE_ENFORCE_AT,
+    };
+    await expect(observeCrossIssueInfluence(db, {
+      ...base,
+      targetIssueId: ownIssueId,
+    })).resolves.toBeNull();
+    await expect(observeCrossIssueInfluence(db, {
+      ...base,
+      targetIssueId: otherIssueId,
+    })).rejects.toMatchObject({
+      status: 403,
+      details: { code: "cross_issue_influence_run_context_required" },
+    });
   });
 });

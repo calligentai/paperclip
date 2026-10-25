@@ -95,7 +95,10 @@ export function isOpenCodeUnknownSessionError(stdout: string, stderr: string): b
     .filter(Boolean)
     .join("\n");
 
-  return /unknown\s+session|session\b.*\bnot\s+found|resource\s+not\s+found:.*[\\/]session[\\/].*\.json|notfounderror|no session/i.test(
+  // "No route for model" means the resumed session is pinned to a model the
+  // gateway no longer serves — the session is as useless as a missing one, so
+  // treat it the same and let the caller retry fresh.
+  return /unknown\s+session|session\b.*\bnot\s+found|resource\s+not\s+found:.*[\\/]session[\\/].*\.json|notfounderror|no session|no route for model/i.test(
     haystack,
   );
 }

@@ -129,11 +129,43 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
           ? (spendCents / company.budgetMonthlyCents) * 100
           : 0;
 
+      // A run that never reported usage writes no cost event at all, and an
+      // event without a cost receipt is booked at zero. Both make spendCents a
+      // lower bound, not a total — say so instead of reporting a confident
+      // number that is a fraction of the invoice.
+      const runConditions = [eq(heartbeatRuns.companyId, companyId)];
+      if (range?.from) runConditions.push(gte(heartbeatRuns.startedAt, range.from));
+      if (range?.to) runConditions.push(lte(heartbeatRuns.startedAt, range.to));
+      const [unaccounted] = await db
+        .select({
+          runs: sql<number>`count(*)::int`,
+        })
+        .from(heartbeatRuns)
+        .leftJoin(costEvents, eq(costEvents.heartbeatRunId, heartbeatRuns.id))
+        .where(and(...runConditions, isNull(costEvents.id)));
+
+      const [unpricedTokens] = await db
+        .select({
+          input: sumAsNumber(costEvents.inputTokens),
+          cached: sumAsNumber(costEvents.cachedInputTokens),
+          output: sumAsNumber(costEvents.outputTokens),
+        })
+        .from(costEvents)
+        .where(and(...conditions, eq(costEvents.costStatus, "unpriced")));
+      const unpricedTokenTotal =
+        Number(unpricedTokens?.input ?? 0) +
+        Number(unpricedTokens?.cached ?? 0) +
+        Number(unpricedTokens?.output ?? 0);
+
       return {
         companyId,
         spendCents,
         budgetCents: company.budgetMonthlyCents,
         utilizationPercent: Number(utilization.toFixed(2)),
+        unpricedRunCount: Number(unaccounted?.runs ?? 0),
+        unpricedTokenCount: unpricedTokenTotal,
+        spendIsComplete:
+          Number(unaccounted?.runs ?? 0) === 0 && unpricedTokenTotal === 0,
       };
     },
 

@@ -4780,6 +4780,22 @@ export async function buildPaperclipRuntimeMcpServers(input: {
       candidate.metadata?.nativeRuntimeAssignmentDigest === assignmentDigest,
   );
   if (!gateway) {
+    // One live native gateway per agent. Every run mints a gateway keyed by its
+    // assignment digest and nothing ever reclaims the old one, so a busy company leaks
+    // a row per run. Archive this agent's previous native gateways before creating the
+    // replacement — they are run-scoped and dead the moment their run ends.
+    await input.db
+      .update(toolMcpGateways)
+      .set({ status: "archived", archivedAt: new Date() })
+      .where(
+        and(
+          eq(toolMcpGateways.companyId, input.agent.companyId),
+          eq(toolMcpGateways.status, "active"),
+          isNull(toolMcpGateways.archivedAt),
+          sql`${toolMcpGateways.metadata}->>'agentId' = ${input.agent.id}`,
+          sql`${toolMcpGateways.metadata}->>'nativeRuntimeAssignmentDigest' is not null`,
+        ),
+      );
     const slug = `native-${input.agent.id.replaceAll("-", "").slice(0, 12)}-${assignmentDigest.slice(0, 16)}`;
     try {
       const created = await service.createNamedGateway({
@@ -4885,7 +4901,11 @@ function createAdapterRuntimeToolAccess(input: {
   });
 }
 
-const MANAGED_MCP_LOCAL_ADAPTERS = new Set(["codex_local"]);
+// opencode_local is deliberately absent: upstream execute.ts ignores
+// context.paperclipManagedMcp, so listing it here only mints gateway tokens
+// per run that nothing consumes. OpenCode agents get MCP from their own
+// opencode.json instead.
+const MANAGED_MCP_LOCAL_ADAPTERS = new Set(["codex_local", "opencode_local"]);
 
 function adapterSupportsManagedMcpConfig(adapterType: string): boolean {
   return MANAGED_MCP_LOCAL_ADAPTERS.has(adapterType);
@@ -5015,6 +5035,9 @@ export async function createManagedMcpRunConfig(input: {
 }): Promise<ManagedMcpGatewayRunConfig | null> {
   if (!adapterSupportsManagedMcpConfig(input.agent.adapterType)) return null;
   if (input.config.managedMcpOnly === false) return null;
+  // ponytail: no issue => no task-bound run => every gateway connection is
+  // rejected with HTTP 422 (connection-intents.ts). Skip writing them.
+  if (!input.issueId) return null;
 
   const rows = await input.db
     .select()
@@ -5094,6 +5117,12 @@ export async function createManagedMcpRunConfig(input: {
   );
 
   const applicableGateways = rows.filter((gateway) =>
+    // Run-scoped native gateways (metadata.managedRuntimeConnectionId) belong to the
+    // Paperclip Runner, which mints its own config. Handing them to a local CLI adapter
+    // as well ships a dozen dead endpoints whose tool names blow the provider's
+    // 128-char function-name limit, and the whole MCP client then fails to initialise.
+    !gateway.metadata?.nativeRuntimeAssignmentDigest &&
+    !gateway.metadata?.managedRuntimeConnectionId &&
     gatewayAppliesToRun({
       gateway,
       agentId: input.agent.id,
@@ -15296,6 +15325,67 @@ export function heartbeatService(
     };
   }
 
+  // A retry must keep the issue binding its predecessor established. Carrying
+  // only the inherited wake payload loses that link when the predecessor was
+  // bound by how it ran (issue execution lock or activity) rather than by an
+  // issueId in its wake payload. Resolve the predecessor's binding instead of
+  // re-deriving it from the payload, and stay unbound when it is ambiguous.
+  async function resolveParentIssueIdForRetry(
+    run: typeof heartbeatRuns.$inferSelect,
+  ): Promise<string | null> {
+    const contextSnapshot = parseObject(run.contextSnapshot);
+    const fromContext =
+      readNonEmptyString(contextSnapshot.issueId) ??
+      readNonEmptyString(contextSnapshot.taskId);
+    if (fromContext) return fromContext;
+
+    const locked = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, run.companyId),
+          eq(issues.executionRunId, run.id),
+        ),
+      )
+      .orderBy(asc(issues.createdAt), asc(issues.id))
+      .limit(1);
+    if (locked[0]) return locked[0].id;
+
+    const checkedOut = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, run.companyId),
+          eq(issues.checkoutRunId, run.id),
+        ),
+      )
+      .orderBy(asc(issues.createdAt), asc(issues.id))
+      .limit(2);
+    if (checkedOut.length === 1) return checkedOut[0].id;
+
+    const touched = await db
+      .selectDistinct({ id: issues.id })
+      .from(activityLog)
+      .innerJoin(
+        issues,
+        and(
+          eq(activityLog.entityId, sql`${issues.id}::text`),
+          eq(issues.companyId, activityLog.companyId),
+        ),
+      )
+      .where(
+        and(
+          eq(activityLog.companyId, run.companyId),
+          eq(activityLog.runId, run.id),
+          eq(activityLog.entityType, "issue"),
+        ),
+      )
+      .limit(2);
+    return touched.length === 1 ? touched[0].id : null;
+  }
+
   async function scheduleBoundedRetryForRun(
     run: typeof heartbeatRuns.$inferSelect,
     agent: typeof agents.$inferSelect,
@@ -15360,7 +15450,7 @@ export function heartbeatService(
         : null;
     const transientRetryNotBefore = transientRecovery?.retryNotBefore ?? null;
     const contextSnapshot = parseObject(run.contextSnapshot);
-    const issueId = readNonEmptyString(contextSnapshot.issueId);
+    const issueId = await resolveParentIssueIdForRetry(run);
 
     if (!baseSchedule) {
       const exhaustion = {
@@ -15512,6 +15602,7 @@ export function heartbeatService(
     const retryContextSnapshot: Record<string, unknown> = withRecoveryContext(
       {
         ...contextSnapshot,
+        ...(issueId ? { issueId } : {}),
         executionRetryAccounting: accountingForScheduledRetry(run, retryReason, schedule.attempt),
         retryOfRunId: run.id,
         wakeReason,
@@ -24742,6 +24833,10 @@ export function heartbeatService(
                 "runtime connection tools could not be delivered",
               );
             }
+            // ponytail: only a run whose contextSnapshot is issue-bound can use
+            // the managed MCP gateways; connection-intents reads the same field
+            // and 422s without it (connection-intents.ts:178).
+            const runBoundIssueId = parseObject(run.contextSnapshot).issueId;
             const runtimeMcpServers = await buildPaperclipRuntimeMcpServers({
               db,
               agent,
@@ -24749,7 +24844,7 @@ export function heartbeatService(
             });
             const runtimeToolDelivery =
               adapter.runtimeToolDelivery ?? "invocation_context";
-            if (runtimeTools && runtimeToolDelivery === "native_mcp") {
+            if (runtimeTools && runtimeToolDelivery === "native_mcp" && runBoundIssueId) {
               runtimeMcpServers.unshift({
                 name: "Paperclip connections",
                 url: runtimeTools.mcpEndpoint,
@@ -24757,7 +24852,7 @@ export function heartbeatService(
                 connectionId: "paperclip-runtime-tools",
               });
             }
-            if (authToken && configuredPaperclipApiBaseUrl() && issueRef) {
+            if (authToken && configuredPaperclipApiBaseUrl() && issueRef && runBoundIssueId) {
               runtimeMcpServers.unshift({ name: "Paperclip projects", url: `${paperclipApiBaseUrl()}/api/mcp/project-tools`,
                 token: authToken, connectionId: "paperclip-project-tools" });
             }
@@ -24771,7 +24866,7 @@ export function heartbeatService(
               runId: run.id,
               config: runtimeConfig,
               projectId: issueRef?.projectId ?? null,
-              issueId: issueRef?.id ?? null,
+              issueId: typeof runBoundIssueId === "string" ? runBoundIssueId : null,
             });
             if (managedMcpConfig) {
               adapterContext.paperclipManagedMcp = managedMcpConfig;
@@ -30038,7 +30133,11 @@ export function heartbeatService(
       const runId =
         typeof runOrLookup === "string" ? runOrLookup : runOrLookup.id;
       if (!run) throw notFound("Heartbeat run not found");
-      if (!run.logStore || !run.logRef) throw notFound("Run log not found");
+      // A run with no log yet is a normal state, not a 404: returning one here
+      // made clients retry forever. Only a missing run is a 404.
+      if (!run.logStore || !run.logRef) {
+        return { runId, store: run.logStore, logRef: run.logRef, content: "", nextOffset: undefined };
+      }
 
       const result = await runLogStore.read(
         {

@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import os from "node:os";
 import path from "node:path";
 import { asBoolean } from "@paperclipai/adapter-utils/server-utils";
@@ -15,6 +16,43 @@ function resolveXdgConfigHome(env: Record<string, string>): string {
     (typeof process.env.XDG_CONFIG_HOME === "string" && process.env.XDG_CONFIG_HOME.trim()) ||
     path.join(os.homedir(), ".config")
   );
+}
+
+
+// Paperclip hands local adapters a run-scoped MCP gateway descriptor
+// (context.paperclipManagedMcp). Codex writes it into config.toml; OpenCode gets a
+// local stdio entry instead of a remote url, because its remote-MCP client only speaks
+// the old HTTP+SSE transport and rejects Paperclip's JSON gateway. The bundled bridge
+// proxies stdio JSON-RPC to the gateway over HTTP.
+const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
+
+function buildManagedOpenCodeMcpConfig(
+  context: Record<string, unknown> | undefined,
+  apiBaseUrl: string | undefined,
+): Record<string, unknown> | null {
+  const managedMcp = isPlainObject(context?.paperclipManagedMcp) ? context.paperclipManagedMcp : null;
+  if (!managedMcp || managedMcp.managedMcpOnly !== true) return null;
+  const gateways = Array.isArray(managedMcp.gateways) ? managedMcp.gateways : [];
+  const base = (apiBaseUrl ?? "").trim().replace(/\/+$/, "");
+  if (!base) return null;
+  const entries: Record<string, unknown> = {};
+  for (const raw of gateways) {
+    if (!isPlainObject(raw)) continue;
+    const endpointPath = typeof raw.endpointPath === "string" ? raw.endpointPath.trim() : "";
+    const bearerToken = typeof raw.bearerToken === "string" ? raw.bearerToken.trim() : "";
+    if (!endpointPath || !bearerToken) continue;
+    const key = `pc${Object.keys(entries).length + 1}`;
+    entries[key] = {
+      type: "local",
+      command: [process.execPath, path.join(__moduleDir, "mcp-stdio-bridge.mjs")],
+      environment: {
+        MCP_HTTP_URL: `${base}${endpointPath}`,
+        MCP_HTTP_TOKEN: bearerToken,
+      },
+      enabled: true,
+    };
+  }
+  return Object.keys(entries).length > 0 ? entries : null;
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -106,6 +144,8 @@ export async function prepareOpenCodeRuntimeConfig(input: {
   env: Record<string, string>;
   config: Record<string, unknown>;
   targetIsRemote?: boolean;
+  context?: Record<string, unknown>;
+  apiBaseUrl?: string;
 }): Promise<PreparedOpenCodeRuntimeConfig> {
   const skipPermissions = asBoolean(input.config.dangerouslySkipPermissions, true);
   if (!skipPermissions) {
@@ -220,6 +260,13 @@ export async function prepareOpenCodeRuntimeConfig(input: {
   if (smallModel) {
     nextConfig.small_model = smallModel;
     notes.push(`Pinned OpenCode small_model to ${smallModel}.`);
+  }
+  const managedMcpServers = buildManagedOpenCodeMcpConfig(input.context, input.apiBaseUrl);
+  if (managedMcpServers) {
+    nextConfig.mcp = managedMcpServers;
+    notes.push(
+      `Registered ${Object.keys(managedMcpServers).length} managed MCP gateway(s) in the runtime OpenCode config.`,
+    );
   }
   await fs.writeFile(runtimeConfigPath, `${JSON.stringify(nextConfig, null, 2)}\n`, "utf8");
 

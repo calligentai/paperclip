@@ -792,6 +792,69 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     });
   });
 
+  it("inherits the predecessor's issue binding when its wake payload lacks one", async () => {
+    const runId = randomUUID();
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const now = new Date("2026-04-22T10:00:00.000Z");
+    await seedRetryFixture({
+      runId,
+      companyId,
+      agentId,
+      now,
+      errorCode: "adapter_failed",
+      errorFamily: "transient_upstream",
+      adapterType: "claude_local",
+    });
+
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Bound by the predecessor's activity",
+      status: "in_progress",
+      assigneeAgentId: agentId,
+    });
+    await db.insert(activityLog).values({
+      companyId,
+      actorType: "agent",
+      actorId: agentId,
+      agentId,
+      runId,
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: issueId,
+    });
+    await db
+      .update(heartbeatRuns)
+      .set({ contextSnapshot: { wakeReason: "board drive: work the assigned issue" } })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const scheduled = await heartbeat.scheduleBoundedRetry(runId, {
+      now,
+      random: () => 0.5,
+    });
+    expect(scheduled.outcome).toBe("scheduled");
+    if (scheduled.outcome !== "scheduled") return;
+
+    const retryRun = await db
+      .select({
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+        wakeupRequestId: heartbeatRuns.wakeupRequestId,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, scheduled.run.id))
+      .then((rows) => rows[0] ?? null);
+    expect((retryRun?.contextSnapshot as Record<string, unknown> | null)?.issueId).toBe(issueId);
+
+    const wakeupRequest = await db
+      .select({ payload: agentWakeupRequests.payload })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, retryRun?.wakeupRequestId ?? ""))
+      .then((rows) => rows[0] ?? null);
+    expect((wakeupRequest?.payload as Record<string, unknown> | null)?.issueId).toBe(issueId);
+  });
+
   it("schedules accepted interaction continuation infra retries while the issue is in_review", async () => {
     const { issueId, runId, now } = await seedMaxTurnFixture({ issueStatus: "in_review" });
     const interactionId = randomUUID();

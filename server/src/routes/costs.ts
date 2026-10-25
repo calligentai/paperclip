@@ -21,6 +21,9 @@ import {
   logActivity,
 } from "../services/index.js";
 import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
+import { resolvePolicyWriteAuthority, throwIfPolicyWriteDenied, type PolicyWriteRequest } from "../services/budget-policy-authority.js";
+import { and, eq } from "drizzle-orm";
+import { companies as companiesTable, projects as projectsTable } from "@paperclipai/db";
 import { fetchAllQuotaWindows } from "../services/quota-windows.js";
 import { badRequest } from "../errors.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
@@ -297,10 +300,58 @@ export function costRoutes(
     "/companies/:companyId/budgets/policies",
     validate(upsertBudgetPolicySchema),
     async (req, res) => {
-      assertBoard(req);
       const companyId = req.params.companyId as string;
       assertCompanyAccess(req, companyId);
-      const summary = await budgets.upsertPolicy(companyId, req.body, req.actor.userId ?? "board");
+
+      const body = req.body as PolicyWriteRequest;
+      const isAgentWrite = req.actor.type === "agent";
+      let projectFound = false;
+      let projectLeadAgentId: string | null = null;
+      if (isAgentWrite && body.scopeType === "project") {
+        const project = await db
+          .select({ leadAgentId: projectsTable.leadAgentId })
+          .from(projectsTable)
+          .where(and(eq(projectsTable.id, body.scopeId), eq(projectsTable.companyId, companyId)))
+          .then((rows) => rows[0] ?? null);
+        projectFound = Boolean(project);
+        projectLeadAgentId = project?.leadAgentId ?? null;
+      }
+
+      const company = await db
+        .select({ budgetMonthlyCents: companiesTable.budgetMonthlyCents })
+        .from(companiesTable)
+        .where(eq(companiesTable.id, companyId))
+        .then((rows) => rows[0] ?? null);
+      const spend = await costs.summary(companyId);
+
+      const authority = resolvePolicyWriteAuthority({
+        actorType: req.actor.type === "board" ? "board" : isAgentWrite ? "agent" : "user",
+        actorUserId: req.actor.type === "board" ? (req.actor.userId ?? null) : null,
+        actorAgentId: isAgentWrite ? req.actor.agentId : null,
+        body,
+        projectFound,
+        projectLeadAgentId,
+        companyBudgetCents: company?.budgetMonthlyCents ?? 0,
+        companyCommittedCents: spend.spendCents,
+      });
+      throwIfPolicyWriteDenied(authority);
+
+      const summary = await budgets.upsertPolicy(
+        companyId,
+        { ...body, amount: authority.amount, hardStopEnabled: authority.hardStopEnabled },
+        authority.actorId,
+      );
+      if (authority.agentIssued) {
+        await logActivity(db, {
+          companyId,
+          actorType: "agent",
+          actorId: authority.actorId,
+          action: "budget.project_policy_set",
+          entityType: "project",
+          entityId: body.scopeId,
+          details: { amount: authority.amount, policyId: summary.policyId },
+        });
+      }
       res.json(summary);
     },
   );

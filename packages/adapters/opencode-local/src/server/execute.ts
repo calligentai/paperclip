@@ -327,7 +327,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (authToken) {
     env.PAPERCLIP_API_KEY = authToken;
   }
-  const preparedRuntimeConfig = await prepareOpenCodeRuntimeConfig({ env, config });
+  const preparedRuntimeConfig = await prepareOpenCodeRuntimeConfig({
+    env,
+    config,
+    context,
+    apiBaseUrl: env.PAPERCLIP_API_URL ?? process.env.PAPERCLIP_API_URL,
+  });
+  await onLog(
+    "stdout",
+    `[paperclip] managedMcp=${context.paperclipManagedMcp ? JSON.stringify(context.paperclipManagedMcp).slice(0, 300) : "none"} notes=${JSON.stringify(preparedRuntimeConfig.notes)}\n`,
+  );
   const localRuntimeConfigHome =
     preparedRuntimeConfig.notes.length > 0 ? preparedRuntimeConfig.env.XDG_CONFIG_HOME : "";
   try {

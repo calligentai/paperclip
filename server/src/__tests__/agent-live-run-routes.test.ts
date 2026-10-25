@@ -954,6 +954,48 @@ describe("agent live run routes", () => {
     });
   });
 
+  it("binds the legacy invoke run to a same-company issueId", async () => {
+    const issueId = "22222222-2222-4222-8222-222222222222";
+    const db = {
+      select: vi.fn(() => ({
+        from: vi.fn().mockReturnThis(),
+        where: vi.fn().mockReturnThis(),
+        limit: vi.fn(async () => [{ id: issueId }]),
+      })),
+    };
+    const res = await requestApp(await createApp(db), (baseUrl) =>
+      request(baseUrl)
+        .post(`/api/agents/${routeAgentId}/heartbeat/invoke?companyId=company-1`)
+        .send({ issueId }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(202);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      routeAgentId,
+      expect.objectContaining({
+        contextSnapshot: expect.objectContaining({ issueId, taskId: issueId }),
+      }),
+    );
+  });
+
+  it("rejects a legacy invoke issueId that does not resolve in the agent's company", async () => {
+    const db = {
+      select: vi.fn(() => ({
+        from: vi.fn().mockReturnThis(),
+        where: vi.fn().mockReturnThis(),
+        limit: vi.fn(async () => []),
+      })),
+    };
+    const res = await requestApp(await createApp(db), (baseUrl) =>
+      request(baseUrl)
+        .post(`/api/agents/${routeAgentId}/heartbeat/invoke?companyId=company-1`)
+        .send({ issueId: "55555555-5555-4555-8555-555555555555" }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(400);
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
   it.each(["wakeup", "heartbeat/invoke"])("lets an operator start an existing agent via %s without creating agents", async (endpoint) => {
     mockAccessService.decide.mockImplementation(async ({ action }) => ({
       allowed: action === "agent:wake", explanation: "Missing permission: agents:create",

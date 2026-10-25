@@ -10,6 +10,7 @@ import { toolConnections } from "@paperclipai/db";
 import { aiConnectionService } from "../services/ai-connections.js";
 import { defaultAiConnectionForHire } from "../services/agent-ai-connection-default.js";
 import { assertAiConnectionCreateAccess, canInstallSharedAiConnectionForNewAgent, responsibleUserForAiRequest, validateAiApiKey } from "./ai-connections.js";
+import { resolveInvokeIssueBinding } from "./invoke-issue-binding.js";
 import { isAiConnectionCompatible } from "@paperclipai/shared";
 import { applyConnectorSkills, resolveConnectorAssignments, annotateConnectorSkills, isConnectorSkill } from "../services/connector-runtime.js";
 import { getExecutionBlocker } from "../services/execution-blocker.js";
@@ -6220,6 +6221,7 @@ export function agentRoutes(
       reason: unknown;
       payload: unknown;
       idempotencyKey: unknown;
+      issueId: unknown;
       forceFreshSession: unknown;
       triggerDetail: unknown;
       debug: unknown;
@@ -6259,6 +6261,47 @@ export function agentRoutes(
     }
     if (typeof body.idempotencyKey === "string" && body.idempotencyKey.length > 0) {
       wakeOpts.idempotencyKey = body.idempotencyKey;
+    }
+    // Optional issue binding: without it this route can only produce issue-less
+    // runs, which the agent contract then asks us to comment on and transition
+    // (impossible — see BUS-64 / BUS-69 / BUS-70).
+    const issueBinding = await resolveInvokeIssueBinding(
+      body.issueId,
+      {
+        companyId: agent.companyId,
+        ...(req.actor.type === "agent" && req.actor.agentId
+          ? { restrictToAssigneeAgentId: req.actor.agentId }
+          : {}),
+      },
+      async (issueId, scope) => {
+        const conditions = [
+          eq(issuesTable.id, issueId),
+          eq(issuesTable.companyId, scope.companyId),
+        ];
+        if (scope.restrictToAssigneeAgentId) {
+          conditions.push(eq(issuesTable.assigneeAgentId, scope.restrictToAssigneeAgentId));
+        }
+        const [row] = await db
+          .select({ id: issuesTable.id })
+          .from(issuesTable)
+          .where(and(...conditions))
+          .limit(1);
+        return row ?? null;
+      },
+    );
+    if (!issueBinding.ok) {
+      res.status(400).json({ error: issueBinding.error });
+      return;
+    }
+    if (issueBinding.issueId) {
+      // `enqueueWakeup` binds the run from the context snapshot it is handed
+      // (issueId, then taskId backfilled from it), so the binding goes there —
+      // the same shape the issue routes use.
+      wakeOpts.contextSnapshot = {
+        ...(wakeOpts.contextSnapshot ?? {}),
+        issueId: issueBinding.issueId,
+        taskId: issueBinding.issueId,
+      };
     }
     const run = await heartbeat.wakeup(id, wakeOpts);
 

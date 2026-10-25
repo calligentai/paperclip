@@ -72,6 +72,9 @@ describe("parseOpenCodeJsonl", () => {
   it("detects unknown session errors", () => {
     expect(isOpenCodeUnknownSessionError("Session not found: s_123", "")).toBe(true);
     expect(isOpenCodeUnknownSessionError("", "unknown session id")).toBe(true);
+    expect(
+      isOpenCodeUnknownSessionError('{"error":{"message":"No route for model \\"deepseek/deepseek-v4.1-flash-1017\\"."}}', ""),
+    ).toBe(true);
     expect(isOpenCodeUnknownSessionError("all good", "")).toBe(false);
   });
 });

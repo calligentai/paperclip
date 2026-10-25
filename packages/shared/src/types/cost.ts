@@ -28,6 +28,13 @@ export interface CostSummary {
   spendCents: number;
   budgetCents: number;
   utilizationPercent: number;
+  /** heartbeat runs in range that produced no cost event at all (died before
+   * reporting usage), so their spend is invisible to spendCents */
+  unpricedRunCount: number;
+  /** tokens on events that carried usage but no cost receipt, booked at zero */
+  unpricedTokenCount: number;
+  /** false when spendCents is only a lower bound on real spend */
+  spendIsComplete: boolean;
 }
 
 export interface IssueCostSummary {

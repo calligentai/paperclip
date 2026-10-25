@@ -234,6 +234,12 @@ export const wakeAgentSchema = z.object({
   reason: z.string().optional().nullable(),
   /** Select an exact failed run; its chat request and actor are server-derived. */
   failedRunId: z.string().uuid().optional(),
+  /**
+   * Issue this wake is about. Without it the run starts unbound: the agent cannot tell
+   * which task it was woken for, answers into the void, and the next wake repeats the
+   * whole session. Callers that know the issue must pass it.
+   */
+  issueId: z.string().uuid().nullable().optional(),
   payload: z.record(z.string(), z.unknown()).optional().nullable(),
   idempotencyKey: z.string().optional().nullable(),
   forceFreshSession: z.preprocess(

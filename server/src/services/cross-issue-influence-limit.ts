@@ -1,6 +1,6 @@
 import { and, count, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { activityLog, heartbeatRuns } from "@paperclipai/db";
+import { activityLog, heartbeatRuns, issues } from "@paperclipai/db";
 import { isUuidLike, issueWriteDenialResponse } from "@paperclipai/shared";
 import { forbidden } from "../errors.js";
 import { logger } from "../middleware/logger.js";
@@ -34,8 +34,18 @@ export function crossIssueInfluenceRunContextError() {
   return forbidden(body.error, body.details);
 }
 
-function readRunSourceIssueId(contextSnapshot: unknown) {
-  if (!contextSnapshot || typeof contextSnapshot !== "object" || Array.isArray(contextSnapshot)) return null;
+function readRunSourceIssueId(run: {
+ contextSnapshot: unknown;
+ nativeIssueId?: string | null;
+}) {
+ // The run row owns the authoritative issue binding; the snapshot only fills in
+ // for runs created before that column was populated. Reading the snapshot alone
+ // made every wake-triggered run look cross-issue, so its writes were all refused.
+ if (typeof run.nativeIssueId === "string" && run.nativeIssueId.trim()) {
+ return run.nativeIssueId.trim();
+ }
+ const contextSnapshot = run.contextSnapshot;
+ if (!contextSnapshot || typeof contextSnapshot !== "object" || Array.isArray(contextSnapshot)) return null;
   const context = contextSnapshot as Record<string, unknown>;
   for (const candidate of [context.issueId, context.taskId]) {
     if (typeof candidate === "string" && candidate.trim()) return candidate.trim();
@@ -90,6 +100,7 @@ export async function observeCrossIssueInfluence(
         id: heartbeatRuns.id,
         companyId: heartbeatRuns.companyId,
         agentId: heartbeatRuns.agentId,
+        nativeIssueId: heartbeatRuns.nativeIssueId,
         responsibleUserId: heartbeatRuns.responsibleUserId,
         contextSnapshot: heartbeatRuns.contextSnapshot,
       })
@@ -109,8 +120,24 @@ export async function observeCrossIssueInfluence(
       throw crossIssueInfluenceRunContextError();
     }
 
-    const sourceIssueId = readRunSourceIssueId(run.contextSnapshot);
-    if (!sourceIssueId) throw crossIssueInfluenceRunContextError();
+    const sourceIssueId = readRunSourceIssueId(run);
+    if (!sourceIssueId) {
+      // Unscoped manual wakes carry no source issue, so writing to one of the
+      // agent's own cards crosses no issue boundary. Without this a wake that
+      // names no issue has no disposition path at all for its own work.
+      const ownIssue = isUuidLike(input.targetIssueId)
+        ? await tx
+            .select({ assigneeAgentId: issues.assigneeAgentId })
+            .from(issues)
+            .where(and(
+              eq(issues.id, input.targetIssueId),
+              eq(issues.companyId, input.companyId),
+            ))
+            .then((rows) => rows[0] ?? null)
+        : null;
+      if (ownIssue?.assigneeAgentId === input.agentId) return null;
+      throw crossIssueInfluenceRunContextError();
+    }
     if (
       sourceIssueId === input.targetIssueId ||
       (input.targetIssueIdentifier && sourceIssueId.toUpperCase() === input.targetIssueIdentifier.toUpperCase())

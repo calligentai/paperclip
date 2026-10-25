@@ -55,6 +55,25 @@ function callerHeaders(req: { headers: Record<string, string | string[] | undefi
   return headers;
 }
 
+function mcpWantsSse(req: Request): boolean {
+  return String(req.headers.accept ?? "").includes("text/event-stream");
+}
+
+// OpenCode's remote MCP client only accepts an SSE-framed response (it rejects
+// application/json with "Invalid content type, expected text/event-stream"), while
+// Codex and curl speak plain JSON. Serve whichever the caller asked for.
+function mcpJson(req: Request, res: Response, payload: unknown, status = 200): void {
+  if (mcpWantsSse(req)) {
+    res.status(status);
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache, no-transform");
+    res.setHeader("Connection", "keep-alive");
+    res.end(`event: message\ndata: ${JSON.stringify(payload)}\n\n`);
+    return;
+  }
+  res.status(status).json(payload);
+}
+
 async function handleMcpGatewayProtocol(
   req: Request,
   res: Response,
@@ -76,7 +95,7 @@ async function handleMcpGatewayProtocol(
         bearerToken: token,
         callerHeaders: headers,
       });
-      res.json({
+      mcpJson(req, res, {
         jsonrpc: "2.0",
         id,
         result: {
@@ -101,7 +120,7 @@ async function handleMcpGatewayProtocol(
         bearerToken: token,
         callerHeaders: headers,
       });
-      res.json({
+      mcpJson(req, res, {
         jsonrpc: "2.0",
         id,
         result: {
@@ -141,7 +160,7 @@ async function handleMcpGatewayProtocol(
       const params = body.params ?? {};
       const name = typeof params.name === "string" ? params.name : "";
       if (!name) {
-        res.status(400).json({ jsonrpc: "2.0", id, error: { code: -32602, message: "params.name is required" } });
+        mcpJson(req, res, { jsonrpc: "2.0", id, error: { code: -32602, message: "params.name is required" } }, 400);
         return;
       }
       const contextMethods = {
@@ -161,7 +180,7 @@ async function handleMcpGatewayProtocol(
             : {},
           callerHeaders: headers,
         });
-        res.json({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: result, isError: false } });
+        mcpJson(req, res, { jsonrpc: "2.0", id, result: { content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: result, isError: false } });
         return;
       }
       const result = await toolGateway.executeTool({
@@ -178,7 +197,7 @@ async function handleMcpGatewayProtocol(
       const contentText = typeof resultRecord?.content === "string"
         ? resultRecord.content
         : JSON.stringify(resultRecord?.data ?? result.result ?? null);
-      res.json({
+      mcpJson(req, res, {
         jsonrpc: "2.0",
         id,
         result: {
@@ -197,7 +216,7 @@ async function handleMcpGatewayProtocol(
         params: body.params ?? {},
         callerHeaders: headers,
       });
-      res.json({ jsonrpc: "2.0", id, result });
+      mcpJson(req, res, { jsonrpc: "2.0", id, result });
       return;
     }
     res.status(404).json({ jsonrpc: "2.0", id, error: { code: -32601, message: "Method not found" } });
@@ -207,18 +226,18 @@ async function handleMcpGatewayProtocol(
       // Provider tool failures are MCP tool results, not successful calls or
       // protocol errors. The service has already recorded the failed invocation.
       if (req.body?.method === "tools/call" && err.reasonCode === "tool_error") {
-        res.json({
+        mcpJson(req, res, {
           jsonrpc: "2.0",
           id,
           result: { content: [{ type: "text", text: err.message }], isError: true },
         });
         return;
       }
-      res.status(err.status).json({
+      mcpJson(req, res, {
         jsonrpc: "2.0",
         id,
         error: { code: err.status >= 500 ? -32603 : -32000, message: err.message, data: { reasonCode: err.reasonCode, ...err.details } },
-      });
+      }, err.status);
       return;
     }
     sendGatewayError(res, err);
@@ -228,7 +247,7 @@ async function handleMcpGatewayProtocol(
 export function mcpGatewayProtocolRoutes(toolGateway: ToolGatewayService) {
   const router = Router();
   router.get("/mcp/gateways/:gatewayPublicId", async (req, res) => {
-    res.json({
+    mcpJson(req, res, {
       transport: "streamable_http",
       endpoint: `/mcp/gateways/${req.params.gatewayPublicId}`,
       authentication: "bearer",
