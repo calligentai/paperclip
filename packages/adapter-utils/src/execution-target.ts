@@ -1567,14 +1567,18 @@ function githubOperationLauncherDirectory(input: GitHubLauncherLocation): string
 /** Call only after execution settles, before releasing its remote environment lease. */
 export async function cleanupGitHubOperationLaunchers(input: GitHubLauncherLocation): Promise<void> {
   const directory = githubOperationLauncherDirectory(input);
+  const configDirectory = input.target?.kind === "remote"
+    ? path.posix.join(path.posix.dirname(directory), `${input.runId}-gh-config`)
+    : path.join(path.dirname(directory), `${input.runId}-gh-config`);
   if (input.target?.kind === "remote") {
     const result = await adapterExecutionTargetCommandRunner(input.target).execute({
-      command: "sh", args: ["-c", `rm -rf -- ${shellQuote(directory)}`],
+      command: "sh", args: ["-c", `rm -rf -- ${shellQuote(directory)} ${shellQuote(configDirectory)}`],
       cwd: input.target.remoteCwd, timeoutMs: 5_000,
     });
     if (result.exitCode !== 0) throw new Error("Could not clean managed GitHub launchers");
   } else {
     await fs.rm(directory, { recursive: true, force: true });
+    await fs.rm(configDirectory, { recursive: true, force: true });
   }
 }
 
@@ -1723,7 +1727,12 @@ export async function prepareGitHubOperationLaunchers(input: {
 }): Promise<Record<string, string>> {
   const remote = input.target?.kind === "remote" ? input.target : null;
   const directory = githubOperationLauncherDirectory(input);
-  const configDirectory = path.posix.join(directory, "gh-config");
+  // Keep gh-config outside the launcher directory. Codex marks
+  // PAPERCLIP_GITHUB_LAUNCHER_DIR read-only; a nested gh-config then cannot
+  // mkdir and managed broker tokens never apply.
+  const configDirectory = input.target?.kind === "remote"
+    ? path.posix.join(path.posix.dirname(directory), `${input.runId}-gh-config`)
+    : path.join(path.dirname(directory), `${input.runId}-gh-config`);
   const basePath = await githubOperationLauncherBasePath(remote, input.env);
   const managedPath = basePath ? `${directory}:${basePath}` : directory;
   // Login shells may reorder PATH through /etc/profile or path_helper. Restore

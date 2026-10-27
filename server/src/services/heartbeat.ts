@@ -21612,8 +21612,13 @@ export function heartbeatService(
           allowStandingDelegation: false,
         },
       );
+      // Local/SSH standard trust: always use host gh/keyring for git push.
+      // Managed GitHub stays available for MCP OAuth, but the managed launcher
+      // stages GH_CONFIG_DIR under PAPERCLIP_GITHUB_LAUNCHER_DIR, which Codex
+      // marks read-only — mkdir then fails with configuration_directory_unavailable
+      // and broker tokens are never applied. Host credentials match this
+      // local_trusted Mac and unblock agent pushes without board intervention.
       const useHostGitHub =
-        !githubSelection.configured &&
         trustPreset.kind === "standard" &&
         ["local", "ssh"].includes(
           selectedEnvironmentForConfig?.driver ?? "local",
