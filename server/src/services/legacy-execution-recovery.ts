@@ -14,6 +14,19 @@ import { issueService } from "./issues.js";
 type Run = typeof heartbeatRuns.$inferSelect;
 export const LEGACY_RECOVERY_CAUSE = "legacy_execution_requires_reconciliation";
 
+/** This dispatch gate returns before the adapter is invoked. Persist that fact so
+ * a control-plane suppression cannot be mistaken for uncertain provider work. */
+export function preDispatchSuppressionEvidence(result: Run["resultJson"]): NonNullable<Run["resultJson"]> {
+  return {
+    ...(result ?? {}),
+    executionRecovery: {
+      kind: "bootstrap",
+      providerWorkStarted: false,
+      reason: "legacy_disposition_repair_suppressed",
+    },
+  };
+}
+
 /** Error families describe availability, not whether earlier actions happened. */
 export function legacyExecutionNeedsReconciliation(
   run: Pick<Run, "runtimeMode" | "status" | "errorCode" | "resultJson"> & Partial<Pick<Run, "scheduledRetryAttempt" | "scheduledRetryReason" | "contextSnapshot">>,
