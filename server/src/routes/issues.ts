@@ -14792,6 +14792,7 @@ export function issueRoutes(
 
         const restoredBlockedReadyDependency =
           issue.status === "blocked" &&
+          !issue.unblockDescriptor &&
           issue.assigneeAgentId &&
           (existing.status !== "blocked" ||
             Array.isArray(req.body.blockedByIssueIds) ||
