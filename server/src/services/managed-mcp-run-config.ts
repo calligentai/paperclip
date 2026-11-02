@@ -10,6 +10,15 @@ export type ManagedMcpGatewayRunConfig = {
   }>;
 };
 
+/**
+ * Add project tools to the run's managed MCP config when the run is issue-bound,
+ * the adapter supports it, managed MCP is enabled, and both a run token and API
+ * base are present. The API base is only checked for presence here.
+ *
+ * Returns the existing config unchanged when those conditions are not met or a
+ * project-tools gateway already exists; otherwise returns a new config preserving
+ * existing gateways, or creates one if needed.
+ */
 export function includePaperclipProjectToolsGateway(input: {
   existing: ManagedMcpGatewayRunConfig | null;
   authToken: string | null;

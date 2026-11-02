@@ -25,6 +25,11 @@ function resolveXdgConfigHome(env: Record<string, string>): string {
 // JSON endpoints. The bundled bridge proxies stdio JSON-RPC to those endpoints over HTTP.
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
+/**
+ * Build local bridge entries for usable managed MCP gateways. Returns null when
+ * managed-only mode or the API base is missing, or no gateway has both an
+ * endpoint path and token. A trailing `/api` is removed from the base URL.
+ */
 function buildManagedOpenCodeMcpConfig(
   context: Record<string, unknown> | undefined,
   apiBaseUrl: string | undefined,
@@ -139,6 +144,19 @@ async function readJsonObject(filepath: string): Promise<Record<string, unknown>
   }
 }
 
+/**
+ * Prepare a temporary OpenCode config home with runtime permissions, providers,
+ * models, and managed MCP servers. Existing MCP names are preserved; conflicts
+ * receive a numeric suffix. Permission skipping defaults to enabled and, when
+ * disabled, leaves the existing permissions unchanged.
+ *
+ * Remote targets, or runs with permission skipping disabled and no usable
+ * managed MCP servers, return the original environment and a no-op cleanup.
+ * Otherwise, call the returned cleanup to remove the temporary config home.
+ * A missing source config directory is ignored, and an unreadable or invalid
+ * config JSON is treated as empty. Other filesystem errors, including cleanup
+ * errors, propagate to the caller.
+ */
 export async function prepareOpenCodeRuntimeConfig(input: {
   env: Record<string, string>;
   config: Record<string, unknown>;
