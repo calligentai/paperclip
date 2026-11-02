@@ -53,6 +53,7 @@ import {
 } from "./adapter-execution-control.js";
 import { executionFailureRetryCount, executionRetryAttemptCount, accountingForScheduledRetry } from "./execution-recovery-attempt.js";
 import { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-payload.js";
+import { includePaperclipProjectToolsGateway, type ManagedMcpGatewayRunConfig } from "./managed-mcp-run-config.js";
 export { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-payload.js";
 import { buildExecutionContinuation, StaleExecutionContinuationError } from "./execution-continuation.js";
 import { renderPaperclipWakePrompt } from "@paperclipai/adapter-utils/server-utils";
@@ -4520,18 +4521,6 @@ function sanitizeAgentSessionMessageText(value: unknown): string | null {
   return redacted.trim().length > 0 ? redacted : null;
 }
 
-type ManagedMcpGatewayRunConfig = {
-  version: 1;
-  managedMcpOnly: boolean;
-  gateways: Array<{
-    id: string;
-    name: string;
-    endpointPath: string;
-    bearerToken: string;
-    tokenPrefix: string;
-  }>;
-};
-
 function configuredPaperclipApiBaseUrl(): string | null {
   const configured = readNonEmptyString(process.env.PAPERCLIP_API_URL);
   return configured
@@ -4912,10 +4901,8 @@ function createAdapterRuntimeToolAccess(input: {
   });
 }
 
-// opencode_local is deliberately absent: upstream execute.ts ignores
-// context.paperclipManagedMcp, so listing it here only mints gateway tokens
-// per run that nothing consumes. OpenCode agents get MCP from their own
-// opencode.json instead.
+// Codex and OpenCode consume the run-scoped managed MCP descriptors through their
+// generated local config. OpenCode does not consume the generic runtimeMcp channel.
 const MANAGED_MCP_LOCAL_ADAPTERS = new Set(["codex_local", "opencode_local"]);
 
 function adapterSupportsManagedMcpConfig(adapterType: string): boolean {
@@ -24884,8 +24871,16 @@ export function heartbeatService(
               projectId: issueRef?.projectId ?? null,
               issueId: typeof runBoundIssueId === "string" ? runBoundIssueId : null,
             });
-            if (managedMcpConfig) {
-              adapterContext.paperclipManagedMcp = managedMcpConfig;
+            const runManagedMcpConfig = includePaperclipProjectToolsGateway({
+              existing: managedMcpConfig,
+              authToken: authToken ?? null,
+              apiBaseUrl: configuredPaperclipApiBaseUrl(),
+              issueBound: Boolean(issueRef && runBoundIssueId),
+              adapterSupported: adapterSupportsManagedMcpConfig(agent.adapterType),
+              enabled: runtimeConfig.managedMcpOnly !== false,
+            });
+            if (runManagedMcpConfig) {
+              adapterContext.paperclipManagedMcp = runManagedMcpConfig;
             }
             const guardedDispatch =
               await dispatchResolvedInteractionContinuationWithAtomicGate(

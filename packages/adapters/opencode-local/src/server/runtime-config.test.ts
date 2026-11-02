@@ -156,6 +156,53 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     await prepared.cleanup();
   });
 
+  it("registers issue-bound Paperclip project tools beside existing OpenCode MCP servers", async () => {
+    const configHome = await makeConfigHome({
+      mcp: {
+        existing: { type: "remote", url: "https://mcp.example", enabled: true },
+      },
+    });
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome },
+      config: {},
+      apiBaseUrl: "http://127.0.0.1:3110",
+      context: {
+        paperclipManagedMcp: {
+          version: 1,
+          managedMcpOnly: true,
+          gateways: [
+            {
+              id: "paperclip-project-tools",
+              name: "Paperclip projects",
+              endpointPath: "/api/mcp/project-tools",
+              bearerToken: "run-scoped-token",
+            },
+          ],
+        },
+      },
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+
+    const runtimeConfig = JSON.parse(
+      await fs.readFile(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8"),
+    ) as { mcp: Record<string, { type: string; command: string[]; environment: Record<string, string> }> };
+    expect(runtimeConfig.mcp.existing).toMatchObject({
+      type: "remote",
+      url: "https://mcp.example",
+      enabled: true,
+    });
+    expect(runtimeConfig.mcp["paperclip-pc1"]).toMatchObject({
+      type: "local",
+      command: [process.execPath, expect.stringContaining("mcp-stdio-bridge.mjs")],
+      environment: {
+        MCP_HTTP_URL: "http://127.0.0.1:3110/api/mcp/project-tools",
+        MCP_HTTP_TOKEN: "run-scoped-token",
+      },
+      enabled: true,
+    });
+    await prepared.cleanup();
+  });
+
   it("pins small_model from PAPERCLIP_OPENCODE_SMALL_MODEL", async () => {
     const configHome = await makeConfigHome({ permission: { read: "allow" } });
     const prepared = await prepareOpenCodeRuntimeConfig({

@@ -19,11 +19,10 @@ function resolveXdgConfigHome(env: Record<string, string>): string {
 }
 
 
-// Paperclip hands local adapters a run-scoped MCP gateway descriptor
-// (context.paperclipManagedMcp). Codex writes it into config.toml; OpenCode gets a
-// local stdio entry instead of a remote url, because its remote-MCP client only speaks
-// the old HTTP+SSE transport and rejects Paperclip's JSON gateway. The bundled bridge
-// proxies stdio JSON-RPC to the gateway over HTTP.
+// Paperclip hands local adapters run-scoped MCP endpoint descriptors
+// (context.paperclipManagedMcp). Codex writes them into config.toml; OpenCode gets local
+// stdio entries instead of remote URLs because its remote-MCP client rejects Paperclip's
+// JSON endpoints. The bundled bridge proxies stdio JSON-RPC to those endpoints over HTTP.
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
 function buildManagedOpenCodeMcpConfig(
