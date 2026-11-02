@@ -46,7 +46,7 @@
     "skills"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node scripts/copy-mcp-stdio-bridge.mjs",
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit"
   },

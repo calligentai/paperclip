@@ -333,9 +333,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     context,
     apiBaseUrl: env.PAPERCLIP_API_URL ?? process.env.PAPERCLIP_API_URL,
   });
+  const managedMcpContext = parseObject(context.paperclipManagedMcp);
+  const managedMcpGatewayCount = Array.isArray(managedMcpContext.gateways)
+    ? managedMcpContext.gateways.length
+    : 0;
   await onLog(
     "stdout",
-    `[paperclip] managedMcp=${context.paperclipManagedMcp ? JSON.stringify(context.paperclipManagedMcp).slice(0, 300) : "none"} notes=${JSON.stringify(preparedRuntimeConfig.notes)}\n`,
+    "[paperclip] managedMcp=" +
+      (managedMcpGatewayCount > 0 ? String(managedMcpGatewayCount) + " gateway(s)" : "none") +
+      " notes=" + JSON.stringify(preparedRuntimeConfig.notes) + "\n",
   );
   const localRuntimeConfigHome =
     preparedRuntimeConfig.notes.length > 0 ? preparedRuntimeConfig.env.XDG_CONFIG_HOME : "";

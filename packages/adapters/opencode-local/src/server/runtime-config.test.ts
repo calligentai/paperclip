@@ -156,6 +156,115 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     await prepared.cleanup();
   });
 
+  it("registers issue-bound Paperclip project tools beside existing OpenCode MCP servers", async () => {
+    const configHome = await makeConfigHome({
+      mcp: {
+        existing: { type: "remote", url: "https://mcp.example", enabled: true },
+      },
+    });
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome },
+      config: {},
+      apiBaseUrl: "http://127.0.0.1:3110",
+      context: {
+        paperclipManagedMcp: {
+          version: 1,
+          managedMcpOnly: true,
+          gateways: [
+            {
+              id: "paperclip-project-tools",
+              name: "Paperclip projects",
+              endpointPath: "/api/mcp/project-tools",
+              bearerToken: "run-scoped-token",
+            },
+          ],
+        },
+      },
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+
+    const runtimeConfig = JSON.parse(
+      await fs.readFile(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8"),
+    ) as { mcp: Record<string, { type: string; command: string[]; environment: Record<string, string> }> };
+    expect(runtimeConfig.mcp.existing).toMatchObject({
+      type: "remote",
+      url: "https://mcp.example",
+      enabled: true,
+    });
+    expect(runtimeConfig.mcp["paperclip-pc1"]).toMatchObject({
+      type: "local",
+      command: [process.execPath, expect.stringContaining("mcp-stdio-bridge.mjs")],
+      environment: {
+        MCP_HTTP_URL: "http://127.0.0.1:3110/api/mcp/project-tools",
+        MCP_HTTP_TOKEN: "run-scoped-token",
+      },
+      enabled: true,
+    });
+    await prepared.cleanup();
+  });
+
+  it("normalizes a PAPERCLIP_API_URL ending in /api before building the project-tools endpoint", async () => {
+    const configHome = await makeConfigHome();
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome },
+      config: {},
+      apiBaseUrl: "http://127.0.0.1:3110/api/",
+      context: {
+        paperclipManagedMcp: {
+          version: 1,
+          managedMcpOnly: true,
+          gateways: [
+            {
+              id: "paperclip-project-tools",
+              name: "Paperclip projects",
+              endpointPath: "/api/mcp/project-tools",
+              bearerToken: "run-scoped-token",
+            },
+          ],
+        },
+      },
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+    const runtimeConfig = JSON.parse(
+      await fs.readFile(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8"),
+    ) as { mcp: Record<string, { environment: Record<string, string> }> };
+    expect(runtimeConfig.mcp["paperclip-pc1"].environment.MCP_HTTP_URL).toBe(
+      "http://127.0.0.1:3110/api/mcp/project-tools",
+    );
+    await prepared.cleanup();
+  });
+
+  it("registers managed project tools without changing permissions when permission skipping is disabled", async () => {
+    const permissions = { read: "deny", bash: "ask" };
+    const configHome = await makeConfigHome({ permission: permissions });
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome },
+      config: { dangerouslySkipPermissions: false },
+      apiBaseUrl: "http://127.0.0.1:3110",
+      context: {
+        paperclipManagedMcp: {
+          version: 1,
+          managedMcpOnly: true,
+          gateways: [
+            {
+              id: "paperclip-project-tools",
+              name: "Paperclip projects",
+              endpointPath: "/api/mcp/project-tools",
+              bearerToken: "run-scoped-token",
+            },
+          ],
+        },
+      },
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+    const runtimeConfig = JSON.parse(
+      await fs.readFile(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8"),
+    ) as { permission: Record<string, string>; mcp: Record<string, unknown> };
+    expect(runtimeConfig.permission).toEqual(permissions);
+    expect(runtimeConfig.mcp["paperclip-pc1"]).toBeDefined();
+    await prepared.cleanup();
+  });
+
   it("pins small_model from PAPERCLIP_OPENCODE_SMALL_MODEL", async () => {
     const configHome = await makeConfigHome({ permission: { read: "allow" } });
     const prepared = await prepareOpenCodeRuntimeConfig({
