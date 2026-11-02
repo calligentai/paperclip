@@ -263,9 +263,20 @@ export async function prepareOpenCodeRuntimeConfig(input: {
   }
   const managedMcpServers = buildManagedOpenCodeMcpConfig(input.context, input.apiBaseUrl);
   if (managedMcpServers) {
-    nextConfig.mcp = managedMcpServers;
+    const mergedMcpServers = isPlainObject(nextConfig.mcp) ? { ...nextConfig.mcp } : {};
+    for (const [name, server] of Object.entries(managedMcpServers)) {
+      const preferredName = `paperclip-${name}`;
+      let mergedName = preferredName;
+      let suffix = 2;
+      while (Object.hasOwn(mergedMcpServers, mergedName)) {
+        mergedName = `${preferredName}-${suffix}`;
+        suffix += 1;
+      }
+      mergedMcpServers[mergedName] = server;
+    }
+    nextConfig.mcp = mergedMcpServers;
     notes.push(
-      `Registered ${Object.keys(managedMcpServers).length} managed MCP gateway(s) in the runtime OpenCode config.`,
+      `Registered ${Object.keys(managedMcpServers).length} managed MCP gateway(s) alongside existing OpenCode MCP servers.`,
     );
   }
   await fs.writeFile(runtimeConfigPath, `${JSON.stringify(nextConfig, null, 2)}\n`, "utf8");
