@@ -32,7 +32,7 @@ function buildManagedOpenCodeMcpConfig(
   const managedMcp = isPlainObject(context?.paperclipManagedMcp) ? context.paperclipManagedMcp : null;
   if (!managedMcp || managedMcp.managedMcpOnly !== true) return null;
   const gateways = Array.isArray(managedMcp.gateways) ? managedMcp.gateways : [];
-  const base = (apiBaseUrl ?? "").trim().replace(/\/+$/, "");
+  const base = (apiBaseUrl ?? "").trim().replace(/\/+$/, "").replace(/\/api$/i, "");
   if (!base) return null;
   const entries: Record<string, unknown> = {};
   for (const raw of gateways) {
@@ -147,7 +147,8 @@ export async function prepareOpenCodeRuntimeConfig(input: {
   apiBaseUrl?: string;
 }): Promise<PreparedOpenCodeRuntimeConfig> {
   const skipPermissions = asBoolean(input.config.dangerouslySkipPermissions, true);
-  if (!skipPermissions) {
+  const managedMcpServers = buildManagedOpenCodeMcpConfig(input.context, input.apiBaseUrl);
+  if (!skipPermissions && !managedMcpServers) {
     return {
       env: input.env,
       notes: [],
@@ -188,9 +189,9 @@ export async function prepareOpenCodeRuntimeConfig(input: {
   }
 
   const existingConfig = await readJsonObject(runtimeConfigPath);
-  const notes = [
-    "Injected runtime OpenCode config with permission=allow for all tools and connections.",
-  ];
+  const notes = skipPermissions
+    ? ["Injected runtime OpenCode config with permission=allow for all tools and connections."]
+    : ["Injected issue-bound Paperclip MCP tools without changing OpenCode permissions."];
 
   // Merge gateway/custom provider definitions supplied via PAPERCLIP_OPENCODE_PROVIDERS
   // (a JSON object in OpenCode's `provider` shape). OpenCode resolves a `--model
@@ -241,10 +242,10 @@ export async function prepareOpenCodeRuntimeConfig(input: {
     }
   }
 
-  const nextConfig: Record<string, unknown> = {
-    ...existingConfig,
-    permission: "allow",
-  };
+  const nextConfig: Record<string, unknown> = { ...existingConfig };
+  if (skipPermissions) {
+    nextConfig.permission = "allow";
+  }
   if (Object.keys(nextProvider).length > 0) {
     nextConfig.provider = nextProvider;
   }
@@ -260,7 +261,6 @@ export async function prepareOpenCodeRuntimeConfig(input: {
     nextConfig.small_model = smallModel;
     notes.push(`Pinned OpenCode small_model to ${smallModel}.`);
   }
-  const managedMcpServers = buildManagedOpenCodeMcpConfig(input.context, input.apiBaseUrl);
   if (managedMcpServers) {
     const mergedMcpServers = isPlainObject(nextConfig.mcp) ? { ...nextConfig.mcp } : {};
     for (const [name, server] of Object.entries(managedMcpServers)) {
