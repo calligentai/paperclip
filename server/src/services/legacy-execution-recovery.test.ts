@@ -1,5 +1,17 @@
 import { expect, it } from "vitest";
-import { legacyExecutionNeedsReconciliation } from "./legacy-execution-recovery.js";
+import { legacyExecutionNeedsReconciliation, preDispatchSuppressionEvidence } from "./legacy-execution-recovery.js";
+
+it("records no-provider evidence for a disposition repair suppressed before adapter dispatch", () => {
+  const result = preDispatchSuppressionEvidence(null);
+  expect(result).toMatchObject({ executionRecovery: {
+    kind: "bootstrap", providerWorkStarted: false,
+    reason: "legacy_disposition_repair_suppressed",
+  } });
+  const run = { runtimeMode: "legacy", status: "cancelled",
+    errorCode: "legacy_disposition_repair_suppressed", resultJson: result };
+  expect(legacyExecutionNeedsReconciliation(run)).toBe(false);
+  expect(legacyExecutionNeedsReconciliation({ ...run, resultJson: null })).toBe(true);
+});
 
 const stopped = {
   runtimeMode: "legacy", status: "cancelled", errorCode: "cancelled",
