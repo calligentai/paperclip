@@ -1,4 +1,5 @@
 import { type CodexUsageBaseline, codexRunUsage } from "./codex-usage-baseline.js";
+import { workspaceRootsFor } from "../../tool-file-changes.js";
 import type {
   HarnessRuntimeRequest,
   HarnessSessionRecoveryOptions,
@@ -56,6 +57,11 @@ class AsyncQueue<T> implements AsyncIterable<T> {
       waiter.resolve({ value: undefined, done: true });
   }
 
+  reopen(): void {
+    if (this.#failure !== null) throw this.#failure;
+    this.#closed = false;
+  }
+
   fail(error: Error): void {
     this.#failure ??= error;
     this.#closed = true;
@@ -103,6 +109,7 @@ export class CodexSessionState {
   readonly goalReason: string | null;
   readonly skillInputs: NonNullable<CodexAppServerDriverOptions["skillInputs"]>;
   readonly reasoningEffort: string | undefined;
+  readonly diagnosticEnvironment: NodeJS.ProcessEnv;
   readonly dynamicTools: readonly Readonly<Record<string, unknown>>[];
   readonly completionFeedback: CodexAppServerDriverOptions["completionFeedback"];
   readonly dynamicToolHandler: CodexAppServerDriverOptions["dynamicToolHandler"];
@@ -136,8 +143,20 @@ export class CodexSessionState {
   dispositionOnlyRecoveryTurnId: string | null = null;
   turnStarted = false;
   readonly terminalTurns = new Map<string, string>();
+  /**
+   * Turns already terminal in the checkpoint this session was restored from.
+   * A replacement runner can re-deliver their committed history as live
+   * notifications; those replays are not new provider activity.
+   */
+  readonly restoredTerminalTurns = new Set<string>();
   readonly workspaceChangesByTurn = new Map<string, Record<string, unknown>>();
   readonly emittedFileReferences = new Set<string>();
+  #workspaceRoots: string[] | null = null;
+  /** Working directory and its realpath, for making provider file paths relative. */
+  get workspaceRoots(): string[] {
+    this.#workspaceRoots ??= workspaceRootsFor(this.opened.context.workingDirectory);
+    return this.#workspaceRoots;
+  }
   readonly itemChannels = new Map<
     string,
     "progress" | "final" | "summary" | "detail" | "unknown"
@@ -180,6 +199,7 @@ export class CodexSessionState {
     goalReason: string | null;
     skillInputs?: CodexAppServerDriverOptions["skillInputs"];
     reasoningEffort?: string;
+    diagnosticEnvironment?: NodeJS.ProcessEnv;
     dynamicTools: readonly Readonly<Record<string, unknown>>[];
     completionFeedback?: CodexAppServerDriverOptions["completionFeedback"];
     dynamicToolHandler?: CodexAppServerDriverOptions["dynamicToolHandler"];
@@ -205,6 +225,7 @@ export class CodexSessionState {
     this.goalReason = input.goalReason;
     this.skillInputs = structuredClone(input.skillInputs ?? []);
     this.reasoningEffort = input.reasoningEffort;
+    this.diagnosticEnvironment = input.diagnosticEnvironment ?? {};
     this.dynamicTools = input.dynamicTools;
     this.dynamicToolHandler = input.dynamicToolHandler;
     this.completionFeedback = input.completionFeedback;
@@ -247,6 +268,7 @@ export class CodexSessionState {
         );
       }
       this.terminalTurns.set(terminal.turnId, terminal.fingerprint);
+      this.restoredTerminalTurns.add(terminal.turnId);
     }
     if (this.activeTurnId && this.terminalTurns.has(this.activeTurnId)) {
       this.activeTurnId = null;
@@ -327,6 +349,18 @@ export class CodexSessionState {
       pending.settle(safeRequestResponse(pending.request.method, "cancel"));
       this.pendingRuntimeRequestMap.delete(requestId);
     }
+  }
+
+  /**
+   * True for a notification that only replays a turn restored as terminal.
+   * The caller drops it without emitting turn or item events; its terminal
+   * fingerprint was already committed, and turn/completed still checks it.
+   */
+  isRestoredTerminalReplay(turnId: string): boolean {
+    return turnId.length > 0
+      && !this.protocolFailed
+      && turnId !== this.activeTurnId
+      && this.restoredTerminalTurns.has(turnId);
   }
 
   notificationNamesActiveTurn(turnId: string, kind: string): boolean {

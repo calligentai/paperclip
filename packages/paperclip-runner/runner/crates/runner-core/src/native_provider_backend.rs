@@ -257,7 +257,7 @@ impl NativeProviderCommandExecutor {
                 &self.config,
                 ExternalProviderCodec::Grok,
             )),
-            "codex" | "opencode" => SelectedExecutor::LocalFacade(
+            "codex" | "opencode" | "cursor_cloud" => SelectedExecutor::LocalFacade(
                 CodexCommandExecutor::with_runner_config(&self.state_dir, &self.config),
             ),
             "acpx" => SelectedExecutor::Acpx(AcpxCommandExecutor::with_runner_config(
@@ -278,6 +278,34 @@ impl NativeProviderCommandExecutor {
 }
 
 impl CommandExecutor for NativeProviderCommandExecutor {
+    fn host_park_ready(&mut self) -> Result<bool, DurableRunnerError> {
+        // Observe credentials without selecting or restoring a provider.
+        self.credentials.poll(true)?;
+        if self.credentials.pending().is_some() {
+            return Ok(false);
+        }
+        match self.selected.as_mut() {
+            Some(SelectedExecutor::LocalFacade(executor)) => executor.host_park_ready(),
+            _ => Ok(false),
+        }
+    }
+
+    fn observe_recovery_state(
+        &mut self,
+        state: &crate::durable::DurableState,
+    ) -> Result<(), DurableRunnerError> {
+        if state.warm_transition.is_some() {
+            return Ok(());
+        }
+        self.select_recovery()?;
+        match self.selected.as_mut() {
+            Some(SelectedExecutor::LocalFacade(executor)) => executor.observe_recovery_state(state),
+            Some(SelectedExecutor::Acpx(executor)) => executor.observe_recovery_state(state),
+            _ => {}
+        }
+        Ok(())
+    }
+
     fn can_reconcile_result_delivery(&mut self) -> Result<bool, DurableRunnerError> {
         self.select_recovery()?;
         self.selected

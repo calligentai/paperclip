@@ -1226,7 +1226,8 @@ export const providerDescriptorSchema = {
         "acpx",
         "openai_dot",
         "grok_bot",
-        "muse"
+        "muse",
+        "cursor_cloud"
       ]
     },
     "driver": {
@@ -1238,7 +1239,8 @@ export const providerDescriptorSchema = {
         "acpx_runtime",
         "openai_dot_mcp",
         "grok_bot_mcp",
-        "muse_external"
+        "muse_external",
+        "cursor_cloud_api"
       ]
     },
     "model": {
@@ -1532,6 +1534,19 @@ export const providerDescriptorSchema = {
             },
             "executionKind": {
               "const": "remote_service"
+            }
+          }
+        },
+        {
+          "properties": {
+            "provider": {
+              "const": "cursor_cloud"
+            },
+            "driver": {
+              "const": "cursor_cloud_api"
+            },
+            "executionKind": {
+              "const": "local_process"
             }
           }
         }
@@ -2050,6 +2065,15 @@ export const providerEventSchema = {
         "progress": {
           "$ref": "#/$defs/nullableShortText"
         },
+        "subject": {
+          "$ref": "#/$defs/nullableShortText"
+        },
+        "description": {
+          "$ref": "#/$defs/nullableShortText"
+        },
+        "blockedReason": {
+          "$ref": "#/$defs/nullableShortText"
+        },
         "output": {
           "type": [
             "string",
@@ -2070,6 +2094,71 @@ export const providerEventSchema = {
             "null"
           ],
           "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "parentItemId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "fileChanges": {
+          "description": "Files changed by this one edit call, each with a bounded patch. Paths are workspace-relative.",
+          "type": "array",
+          "maxItems": 32,
+          "items": {
+            "type": "object",
+            "required": [
+              "path",
+              "operation",
+              "previousPath",
+              "additions",
+              "deletions",
+              "diff",
+              "diffTruncated"
+            ],
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1024,
+                "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+              },
+              "operation": {
+                "enum": [
+                  "create",
+                  "modify",
+                  "delete",
+                  "rename"
+                ]
+              },
+              "previousPath": {
+                "$ref": "#/$defs/safePath"
+              },
+              "additions": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "deletions": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "diff": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "maxLength": 32768
+              },
+              "diffTruncated": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": false
+          }
         }
       },
       "additionalProperties": false
@@ -2226,6 +2315,12 @@ export const providerEventSchema = {
                 "$ref": "#/$defs/nullableShortText"
               },
               "activitySummary": {
+                "$ref": "#/$defs/nullableShortText"
+              },
+              "prompt": {
+                "$ref": "#/$defs/nullableShortText"
+              },
+              "result": {
                 "$ref": "#/$defs/nullableShortText"
               }
             },
@@ -2917,6 +3012,10 @@ export const workspaceDiffSchema = {
               "null"
             ],
             "maxLength": 262144
+          },
+          "diffTruncated": {
+            "description": "The producer shortened or omitted this file's patch; additions and deletions still cover all of it.",
+            "type": "boolean"
           }
         },
         "additionalProperties": false
