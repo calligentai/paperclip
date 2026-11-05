@@ -6106,6 +6106,64 @@ export function agentRoutes(
         ),
       );
     }
+
+    // Keep a caller-supplied issue binding attached to the execution context.
+    // The schema exposes issueId at the top level; without copying the
+    // validated value here, a wake starts an unbound agent session even when
+    // its caller knows exactly which issue it should execute.
+    const issueBinding = req.body.failedRunId
+      ? null
+      : await resolveInvokeIssueBinding(
+          req.body.issueId,
+          {
+            companyId: agent.companyId,
+            ...(req.actor.type === "agent" && req.actor.agentId
+              ? { restrictToAssigneeAgentId: req.actor.agentId }
+              : {}),
+          },
+          async (issueId, scope) => {
+            const conditions = [
+              eq(issuesTable.id, issueId),
+              eq(issuesTable.companyId, scope.companyId),
+            ];
+            if (scope.restrictToAssigneeAgentId) {
+              conditions.push(eq(issuesTable.assigneeAgentId, scope.restrictToAssigneeAgentId));
+            }
+            const [row] = await db
+              .select({ id: issuesTable.id })
+              .from(issuesTable)
+              .where(and(...conditions))
+              .limit(1);
+            return row ?? null;
+          },
+        );
+    if (issueBinding && !issueBinding.ok) {
+      res.status(400).json({ error: issueBinding.error });
+      return;
+    }
+
+    const contextSnapshot = {
+      ...retryConversationContext,
+      triggeredBy: req.actor.type,
+      originIdentityContextId: req.actor.identityContextId ?? null,
+      responsibleUserId: req.actor.type === "agent" ? req.actor.onBehalfOfUserId ?? null : req.actor.userId ?? null,
+      actorId: req.actor.type === "agent" ? req.actor.agentId : req.actor.userId,
+      forceFreshSession: req.body.forceFreshSession === true,
+      ...(req.body.reason === "rerun_with_provider_trace" &&
+      req.body.debug?.providerTrace === "raw"
+        ? { resumeIntent: true }
+        : {}),
+      ...(req.body.debug?.providerTrace === "raw"
+        ? {
+            debug: { providerTrace: "raw" },
+            providerTraceRequestedBy: req.actor.userId ?? "local-admin",
+          }
+        : {}),
+      ...(issueBinding?.ok && issueBinding.issueId
+        ? { issueId: issueBinding.issueId, taskId: issueBinding.issueId }
+        : {}),
+    };
+
     const run = await heartbeat.wakeup(id, {
       failedRunId: req.body.failedRunId ?? null,
       ...(req.actor.type === "board" && !req.body.failedRunId ? { manualUserWake: true } : {}),
@@ -6118,24 +6176,7 @@ export function agentRoutes(
       idempotencyKey: req.body.idempotencyKey ?? null,
       requestedByActorType: req.actor.type === "agent" ? "agent" : "user",
       requestedByActorId: req.actor.type === "agent" ? req.actor.agentId ?? null : req.actor.userId ?? null,
-      contextSnapshot: {
-        ...retryConversationContext,
-        triggeredBy: req.actor.type,
-        originIdentityContextId: req.actor.identityContextId ?? null,
-        responsibleUserId: req.actor.type === "agent" ? req.actor.onBehalfOfUserId ?? null : req.actor.userId ?? null,
-        actorId: req.actor.type === "agent" ? req.actor.agentId : req.actor.userId,
-        forceFreshSession: req.body.forceFreshSession === true,
-        ...(req.body.reason === "rerun_with_provider_trace" &&
-        req.body.debug?.providerTrace === "raw"
-          ? { resumeIntent: true }
-          : {}),
-        ...(req.body.debug?.providerTrace === "raw"
-          ? {
-              debug: { providerTrace: "raw" },
-              providerTraceRequestedBy: req.actor.userId ?? "local-admin",
-            }
-          : {}),
-      },
+      contextSnapshot,
     });
 
     if (!run) {

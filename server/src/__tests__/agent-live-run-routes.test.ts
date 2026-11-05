@@ -1513,6 +1513,48 @@ describe("agent live run routes", () => {
     });
   });
 
+  it("binds a top-level issueId on the wakeup route to the run context", async () => {
+    const issueId = "22222222-2222-4222-8222-222222222222";
+    const query = {
+      from: vi.fn().mockReturnThis(),
+      where: vi.fn().mockReturnThis(),
+      limit: vi.fn(async () => [{ id: issueId }]),
+    };
+    const db = { select: vi.fn(() => query) };
+    const res = await requestApp(await createApp(db), (baseUrl) =>
+      request(baseUrl)
+        .post(`/api/agents/${routeAgentId}/wakeup?companyId=company-1`)
+        .send({ issueId, source: "assignment", triggerDetail: "system", reason: "issue_ready" }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(202);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      routeAgentId,
+      expect.objectContaining({
+        contextSnapshot: expect.objectContaining({ issueId, taskId: issueId }),
+      }),
+    );
+  });
+
+  it("rejects a wakeup issueId that is not in the agent's company", async () => {
+    const issueId = "22222222-2222-4222-8222-222222222222";
+    const query = {
+      from: vi.fn().mockReturnThis(),
+      where: vi.fn().mockReturnThis(),
+      limit: vi.fn(async () => []),
+    };
+    const db = { select: vi.fn(() => query) };
+    const res = await requestApp(await createApp(db), (baseUrl) =>
+      request(baseUrl)
+        .post(`/api/agents/${routeAgentId}/wakeup?companyId=company-1`)
+        .send({ issueId, source: "assignment", triggerDetail: "system", reason: "issue_ready" }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(400);
+    expect(res.body.error).toContain("issueId must name an issue in this agent's company");
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
   it("allows implicit local administrators to opt one manual run into raw provider tracing", async () => {
     const res = await requestApp(await createApp(), (baseUrl) =>
       request(baseUrl)
